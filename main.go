@@ -88,7 +88,7 @@ func main() {
 
 	var analysis string
 	if ai == "deepseek" && deepseekKey != "" {
-		analysis = callDeepSeek(candles, series, symbol, tf, srLevels, patterns)
+		analysis = callDeepSeekWithDeepThink(candles, series, symbol, tf, srLevels, patterns) // Ganti ke DeepThink
 	} else if grokKey != "" {
 		analysis = callGrok(candles, series, symbol, tf, srLevels, patterns)
 	} else {
@@ -990,17 +990,610 @@ Jawab DALAM FORMAT INI SAJA:
 
 ⚡ ENTRY ZONE / ORDER SETUP
 ├ Buy Zone: $xxx - $xxx
-├ Entry Trigger: ...
-├ Take Profit 1: $xxx (xx%%)
-├ Take Profit 2: $xxx (xx%%)
-└ Stop Loss: $xxx (risk xx%%)
+func buildPrompt(series *techan.TimeSeries, symbol, tf string, srLevels []SupportResistance, patterns []Pattern) string {
+	close := techan.NewClosePriceIndicator(series)
+	ema5 := techan.NewEMAIndicator(close, 5)
+	ema10 := techan.NewEMAIndicator(close, 10)
+	ema30 := techan.NewEMAIndicator(close, 30)
+	ema50 := techan.NewEMAIndicator(close, 50)
+	ema200 := techan.NewEMAIndicator(close, 200)
+	bb := techan.NewBollingerBandIndicator(close, 20, 2.0)
+	rsi := techan.NewRSIIndicator(close, 14)
+	macd := techan.NewMACDIndicator(close, 12, 26)
+	signal := techan.NewEMAIndicator(macd, 9)
+	
+	// Additional indicators for deeper analysis
+	volume := techan.NewVolumeIndicator(series)
+	atr := techan.NewAverageTrueRangeIndicator(series, 14)
+	
+	last := series.LastIndex()
+	prev := last - 1
 
-💡 Rekomendasi: BUY / SELL / HOLD
-⚠️ Risk Level: Low / Medium / High
+	// Calculate price changes
+	currentPrice := close.Calculate(last).InexactFloat64()
+	prevPrice := close.Calculate(prev).InexactFloat64()
+	priceChange := ((currentPrice - prevPrice) / prevPrice) * 100
 
-Jawab langsung tanpa kata pengantar!`, symbol, tf, jsonData, srInfo.String(), patternsInfo.String(), symbol, tf)
+	// Calculate trend strength
+	trendStrength := calculateTrendStrength(series)
+	volatility := calculateVolatility(series)
+
+	// Build comprehensive technical data
+	technicalData := map[string]interface{}{
+		"symbol":            symbol,
+		"timeframe":         tf,
+		"current_price":     fmt.Sprintf("%.4f", currentPrice),
+		"price_change_24h":  fmt.Sprintf("%.2f%%", priceChange),
+		"trend_strength":    trendStrength,
+		"volatility":        fmt.Sprintf("%.2f%%", volatility*100),
+		
+		// Moving Averages
+		"ema_5":    ema5.Calculate(last).StringFixed(4),
+		"ema_10":   ema10.Calculate(last).StringFixed(4),
+		"ema_30":   ema30.Calculate(last).StringFixed(4),
+		"ema_50":   ema50.Calculate(last).StringFixed(4),
+		"ema_200":  ema200.Calculate(last).StringFixed(4),
+		
+		// EMA Alignment
+		"ema_alignment": getEMAAlignment(ema5, ema10, ema30, ema50, ema200, last),
+		
+		// Bollinger Bands
+		"bb_upper":      bb.UpperBand(last).StringFixed(4),
+		"bb_middle":     bb.MiddleBand(last).StringFixed(4),
+		"bb_lower":      bb.LowerBand(last).StringFixed(4),
+		"bb_position":   getBBPosition(close, bb, last),
+		"bb_squeeze":    isBBSqueeze(bb, last),
+		
+		// Oscillators
+		"rsi":          rsi.Calculate(last).StringFixed(2),
+		"rsi_trend":    getRSITrend(rsi, last),
+		"macd":         fmt.Sprintf("%.4f", macd.Calculate(last).InexactFloat64()),
+		"macd_signal":  fmt.Sprintf("%.4f", signal.Calculate(last).InexactFloat64()),
+		"macd_hist":    fmt.Sprintf("%.4f", macd.Calculate(last).InexactFloat64()-signal.Calculate(last).InexactFloat64()),
+		"macd_trend":   getMACDTrend(macd, signal, last),
+		
+		// Volume Analysis
+		"volume":          volume.Calculate(last).StringFixed(2),
+		"volume_trend":    getVolumeTrend(volume, last),
+		"volume_vs_avg":   getVolumeVsAverage(volume, last),
+		
+		// Volatility
+		"atr":          atr.Calculate(last).StringFixed(4),
+		"atr_percent":  fmt.Sprintf("%.2f%%", (atr.Calculate(last).InexactFloat64()/currentPrice)*100),
+	}
+
+	// Build Support/Resistance levels with strength analysis
+	var srLevelsInfo []map[string]interface{}
+	for _, level := range srLevels {
+		distance := ((currentPrice - level.Price) / currentPrice) * 100
+		srLevelsInfo = append(srLevelsInfo, map[string]interface{}{
+			"type":      level.Type,
+			"price":     fmt.Sprintf("%.4f", level.Price),
+			"strength":  level.Strength,
+			"distance":  fmt.Sprintf("%.2f%%", math.Abs(distance)),
+			"direction": getDirectionFromPrice(currentPrice, level.Price),
+		})
+	}
+
+	// Build Patterns with confidence and implications
+	var patternsInfo []map[string]interface{}
+	for _, pattern := range patterns {
+		patternsInfo = append(patternsInfo, map[string]interface{}{
+			"name":        pattern.Name,
+			"type":        pattern.Type,
+			"confidence":  fmt.Sprintf("%.0f%%", pattern.Confidence*100),
+			"description": pattern.Description,
+			"implication": getPatternImplication(pattern),
+			"timeframe":   getPatternTimeframeImplication(pattern, tf),
+		})
+	}
+
+	// Build market structure analysis
+	marketStructure := analyzeMarketStructure(series, srLevels)
+
+	// Compile all data
+	analysisData := map[string]interface{}{
+		"technical_indicators": technicalData,
+		"support_resistance":   srLevelsInfo,
+		"patterns":             patternsInfo,
+		"market_structure":     marketStructure,
+		"time_analysis":        getTimeAnalysis(tf),
+	}
+
+	jsonData, _ := json.MarshalIndent(analysisData, "", "  ")
+
+	// Enhanced prompt template for DeepThink
+	prompt := fmt.Sprintf(`# CRYPTO TRADING DEEP ANALYSIS REQUEST
+
+## ASSET: %s (%s)
+## ANALYSIS TYPE: DEEPTHINK TECHNICAL ANALYSIS
+## TIMESTAMP: %s
+
+## RAW TECHNICAL DATA:
+%s
+
+## ANALYSIS INSTRUCTIONS:
+
+### 1. MARKET STRUCTURE ANALYSIS
+- Identify primary trend (bullish/bearish/neutral)
+- Analyze market cycle position (accumulation/uptrend/distribution/downtrend)
+- Assess trend strength and sustainability
+- Identify key market structure levels
+
+### 2. MULTI-TIMEFRAME CONTEXT
+- Implicit higher timeframe analysis (even though data is %s)
+- Consider where this fits in daily/weekly context
+- Analyze momentum across different time perspectives
+
+### 3. PROBABILITY-WEIGHTED SCENARIOS
+Develop 3 main scenarios with probability estimates:
+
+#### 🟢 BULLISH SCENARIO (X%% probability)
+- Trigger conditions
+- Price targets
+- Confirmation signals
+- Risk factors
+
+#### 🟡 NEUTRAL/RANGE SCENARIO (X%% probability)  
+- Range boundaries
+- Accumulation zones
+- Breakout triggers
+- Time decay considerations
+
+#### 🔴 BEARISH SCENARIO (X%% probability)
+- Breakdown levels
+- Target projections
+- Warning signs
+- Capitulation points
+
+### 4. TRADING SETUP IDENTIFICATION
+- Optimal entry zones with confluence
+- High-probability triggers (price action + volume)
+- Stop loss placement with technical justification
+- Take profit targets (multi-level)
+- Position sizing recommendations
+
+### 5. RISK MANAGEMENT FRAMEWORK
+- Key risk factors (market-wide and asset-specific)
+- Early warning signals for each scenario
+- Contingency plans for scenario invalidation
+- Risk-reward assessment for each setup
+
+### 6. CONFIDENCE METRICS
+- Setup quality score (1-10)
+- Risk-reward ratio calculation
+- Market alignment score
+- Timing confidence
+
+## REQUIRED OUTPUT FORMAT:
+
+📊 [SYMBOL] DEEPTHINK ANALYSIS ([TIMEFRAME])
+
+🎯 MARKET STRUCTURE & CONTEXT
+• Primary Trend: ...
+• Market Cycle: ...
+• Key MS Levels: ...
+• Trend Strength: X/10
+
+🔍 TECHNICAL POSITIONING  
+• Price vs EMAs: ...
+• RSI Momentum: ...
+• Volume Profile: ...
+• Volatility State: ...
+
+📈 PROBABILITY SCENARIOS
+├ 🟢 Bullish (XX%%) - [Brief description]
+├ 🟡 Neutral (XX%%) - [Brief description] 
+└ 🔴 Bearish (XX%%) - [Brief description]
+
+⚡ HIGH-CONVICTION SETUP
+├ Optimal Entry: $XXX - $XXX
+├ Trigger: [Specific price action/pattern]
+├ TP1: $XXX (X.X%% gain)
+├ TP2: $XXX (X.X%% gain)
+├ TP3: $XXX (X.X%% gain)
+└ SL: $XXX (X.X%% risk) | RR: 1:X.X
+
+🎚️ RISK PARAMETERS
+• Max Position Size: X%% portfolio
+• Key Risk: [Main risk factor]
+• Early Warning: [First sign of invalidation]
+• Hedge Consideration: [If applicable]
+
+📊 CONFIDENCE METRICS
+• Setup Quality: X/10
+• Risk-Reward: 1:X.X
+• Market Alignment: X/10
+• Timing Score: X/10
+
+💡 STRATEGIC INSIGHTS
+• Market Sentiment Alignment: ...
+• Catalyst Watch: ...
+• Alternative Scenarios: ...
+
+⚠️ RISK DISCLAIMER
+This analysis is for educational purposes. Always do your own research and manage risk appropriately.`,
+		symbol, tf, time.Now().Format("2006-01-02 15:04:05"), 
+		jsonData, tf)
+
+	return prompt
 }
 
+// ================================
+// HELPER FUNCTIONS FOR DEEP ANALYSIS
+// ================================
+
+func calculateTrendStrength(series *techan.TimeSeries) string {
+	close := techan.NewClosePriceIndicator(series)
+	last := series.LastIndex()
+	
+	if last < 50 {
+		return "Insufficient Data"
+	}
+
+	// Calculate slope of last 20 periods
+	var sumX, sumY, sumXY, sumX2 float64
+	n := 20.0
+	
+	for i := 0; i < 20; i++ {
+		idx := last - 19 + i
+		x := float64(i)
+		y := close.Calculate(idx).InexactFloat64()
+		sumX += x
+		sumY += y
+		sumXY += x * y
+		sumX2 += x * x
+	}
+	
+	slope := (n*sumXY - sumX*sumY) / (n*sumX2 - sumX*sumX)
+	avgPrice := sumY / n
+	trendPercent := (slope * 20 / avgPrice) * 100
+
+	if math.Abs(trendPercent) < 0.5 {
+		return "Sideways"
+	} else if trendPercent > 2 {
+		return "Strong Bullish"
+	} else if trendPercent > 0.5 {
+		return "Bullish"
+	} else if trendPercent < -2 {
+		return "Strong Bearish"
+	} else {
+		return "Bearish"
+	}
+}
+
+func calculateVolatility(series *techan.TimeSeries) float64 {
+	close := techan.NewClosePriceIndicator(series)
+	last := series.LastIndex()
+	
+	if last < 20 {
+		return 0
+	}
+
+	var sum, sumSq float64
+	for i := 0; i < 20; i++ {
+		idx := last - 19 + i
+		price := close.Calculate(idx).InexactFloat64()
+		sum += price
+		sumSq += price * price
+	}
+
+	avg := sum / 20
+	variance := (sumSq / 20) - (avg * avg)
+	return math.Sqrt(variance) / avg
+}
+
+func getEMAAlignment(ema5, ema10, ema30, ema50, ema200 techan.Indicator, idx int) string {
+	e5 := ema5.Calculate(idx).InexactFloat64()
+	e10 := ema10.Calculate(idx).InexactFloat64()
+	e30 := ema30.Calculate(idx).InexactFloat64()
+	e50 := ema50.Calculate(idx).InexactFloat64()
+	e200 := ema200.Calculate(idx).InexactFloat64()
+
+	if e5 > e10 && e10 > e30 && e30 > e50 && e50 > e200 {
+		return "Perfect Bullish Alignment"
+	} else if e5 < e10 && e10 < e30 && e30 < e50 && e50 < e200 {
+		return "Perfect Bearish Alignment"
+	} else if e5 > e10 && e10 > e30 {
+		return "Short-term Bullish"
+	} else if e5 < e10 && e10 < e30 {
+		return "Short-term Bearish"
+	} else {
+		return "Mixed/Consolidating"
+	}
+}
+
+func getBBPosition(close techan.Indicator, bb techan.BollingerBandIndicator, idx int) string {
+	price := close.Calculate(idx).InexactFloat64()
+	upper := bb.UpperBand(idx).InexactFloat64()
+	lower := bb.LowerBand(idx).InexactFloat64()
+	middle := bb.MiddleBand(idx).InexactFloat64()
+
+	position := (price - lower) / (upper - lower) * 100
+
+	if position > 80 {
+		return "Overbought (Upper Band)"
+	} else if position < 20 {
+		return "Oversold (Lower Band)"
+	} else if position > 60 {
+		return "Upper Half"
+	} else if position < 40 {
+		return "Lower Half"
+	} else {
+		return "Middle Range"
+	}
+}
+
+func isBBSqueeze(bb techan.BollingerBandIndicator, idx int) string {
+	upper := bb.UpperBand(idx).InexactFloat64()
+	lower := bb.LowerBand(idx).InexactFloat64()
+	width := (upper - lower) / bb.MiddleBand(idx).InexactFloat64() * 100
+
+	if width < 2 {
+		return "High Squeeze"
+	} else if width < 4 {
+		return "Medium Squeeze"
+	} else {
+		return "No Squeeze"
+	}
+}
+
+func getRSITrend(rsi techan.Indicator, idx int) string {
+	current := rsi.Calculate(idx).InexactFloat64()
+	prev := rsi.Calculate(idx - 1).InexactFloat64()
+
+	if current > 70 && prev > 70 {
+		return "Overbought"
+	} else if current < 30 && prev < 30 {
+		return "Oversold"
+	} else if current > 50 && current > prev {
+		return "Bullish Momentum"
+	} else if current < 50 && current < prev {
+		return "Bearish Momentum"
+	} else {
+		return "Neutral"
+	}
+}
+
+func getMACDTrend(macd, signal techan.Indicator, idx int) string {
+	macdVal := macd.Calculate(idx).InexactFloat64()
+	signalVal := signal.Calculate(idx).InexactFloat64()
+	prevMacd := macd.Calculate(idx - 1).InexactFloat64()
+	prevSignal := signal.Calculate(idx - 1).InexactFloat64()
+
+	if macdVal > signalVal && prevMacd <= prevSignal {
+		return "Bullish Crossover"
+	} else if macdVal < signalVal && prevMacd >= prevSignal {
+		return "Bearish Crossover"
+	} else if macdVal > signalVal {
+		return "Bullish"
+	} else if macdVal < signalVal {
+		return "Bearish"
+	} else {
+		return "Neutral"
+	}
+}
+
+func getVolumeTrend(volume techan.Indicator, idx int) string {
+	if idx < 5 {
+		return "Insufficient Data"
+	}
+
+	current := volume.Calculate(idx).InexactFloat64()
+	prev := volume.Calculate(idx - 1).InexactFloat64()
+	avg := 0.0
+
+	for i := 0; i < 5; i++ {
+		avg += volume.Calculate(idx - i).InexactFloat64()
+	}
+	avg /= 5
+
+	if current > avg * 1.5 {
+		return "High Volume Spike"
+	} else if current > avg * 1.2 {
+		return "Above Average"
+	} else if current < avg * 0.8 {
+		return "Below Average"
+	} else {
+		return "Normal"
+	}
+}
+
+func getVolumeVsAverage(volume techan.Indicator, idx int) string {
+	if idx < 20 {
+		return "Insufficient Data"
+	}
+
+	current := volume.Calculate(idx).InexactFloat64()
+	sum := 0.0
+
+	for i := 0; i < 20; i++ {
+		sum += volume.Calculate(idx - i).InexactFloat64()
+	}
+	avg := sum / 20
+
+	ratio := (current / avg) * 100
+	return fmt.Sprintf("%.0f%%", ratio)
+}
+
+func getDirectionFromPrice(current, level float64) string {
+	if current > level {
+		return "above"
+	} else {
+		return "below"
+	}
+}
+
+func getPatternImplication(pattern Pattern) string {
+	switch pattern.Name {
+	case "Head and Shoulders":
+		return "Potential trend reversal to bearish"
+	case "Inverse Head and Shoulders":
+		return "Potential trend reversal to bullish"
+	case "Double Top":
+		return "Resistance holding, potential downturn"
+	case "Double Bottom":
+		return "Support holding, potential upturn"
+	case "Ascending Triangle":
+		return "Bullish continuation pattern"
+	case "Descending Triangle":
+		return "Bearish continuation pattern"
+	case "Symmetrical Triangle":
+		return "Consolidation, breakout direction uncertain"
+	default:
+		return "Monitor for confirmation"
+	}
+}
+
+func getPatternTimeframeImplication(pattern Pattern, tf string) string {
+	baseImplication := "Short-term"
+	switch tf {
+	case "1d", "12h":
+		baseImplication = "Medium-term"
+	case "3d", "1w":
+		baseImplication = "Long-term"
+	}
+
+	if strings.Contains(pattern.Name, "Head and Shoulders") || strings.Contains(pattern.Name, "Double") {
+		return baseImplication + " reversal implication"
+	} else {
+		return baseImplication + " continuation implication"
+	}
+}
+
+func analyzeMarketStructure(series *techan.TimeSeries, srLevels []SupportResistance) map[string]interface{} {
+	close := techan.NewClosePriceIndicator(series)
+	last := series.LastIndex()
+	currentPrice := close.Calculate(last).InexactFloat64()
+
+	// Find nearest support and resistance
+	var nearestSupport, nearestResistance *SupportResistance
+	minSupportDist, minResistanceDist := math.MaxFloat64, math.MaxFloat64
+
+	for _, level := range srLevels {
+		dist := math.Abs(level.Price - currentPrice)
+		if level.Type == "support" && dist < minSupportDist {
+			minSupportDist = dist
+			nearestSupport = &level
+		} else if level.Type == "resistance" && dist < minResistanceDist {
+			minResistanceDist = dist
+			nearestResistance = &level
+		}
+	}
+
+	supportDist := "N/A"
+	resistanceDist := "N/A"
+	
+	if nearestSupport != nil {
+		supportDist = fmt.Sprintf("%.2f%%", (currentPrice-nearestSupport.Price)/currentPrice*100)
+	}
+	if nearestResistance != nil {
+		resistanceDist = fmt.Sprintf("%.2f%%", (nearestResistance.Price-currentPrice)/currentPrice*100)
+	}
+
+	return map[string]interface{}{
+		"nearest_support":       supportDist,
+		"nearest_resistance":    resistanceDist,
+		"price_position":        getPricePositionInRange(nearestSupport, nearestResistance, currentPrice),
+		"key_levels_quality":    len(srLevels),
+		"market_balance":        assessMarketBalance(series, srLevels),
+	}
+}
+
+func getPricePositionInRange(support, resistance *SupportResistance, currentPrice float64) string {
+	if support == nil || resistance == nil {
+		return "Unknown"
+	}
+
+	rangeHeight := resistance.Price - support.Price
+	positionFromSupport := currentPrice - support.Price
+	percentage := (positionFromSupport / rangeHeight) * 100
+
+	if percentage < 33 {
+		return "Near Support"
+	} else if percentage > 66 {
+		return "Near Resistance"
+	} else {
+		return "Mid Range"
+	}
+}
+
+func assessMarketBalance(series *techan.TimeSeries, srLevels []SupportResistance) string {
+	if len(srLevels) < 4 {
+		return "Insufficient Levels"
+	}
+
+	supportCount := 0
+	resistanceCount := 0
+	for _, level := range srLevels {
+		if level.Type == "support" {
+			supportCount++
+		} else {
+			resistanceCount++
+		}
+	}
+
+	if math.Abs(float64(supportCount-resistanceCount)) <= 1 {
+		return "Balanced Market"
+	} else if supportCount > resistanceCount {
+		return "Support Heavy"
+	} else {
+		return "Resistance Heavy"
+	}
+}
+
+func getTimeAnalysis(tf string) map[string]interface{} {
+	now := time.Now()
+	_, week := now.ISOWeek()
+	
+	return map[string]interface{}{
+		"timeframe":        tf,
+		"analysis_period":  getAnalysisPeriod(tf),
+		"week_of_year":     week,
+		"session":          getTradingSession(now),
+		"optimal_hours":    getOptimalTradingHours(tf),
+	}
+}
+
+func getAnalysisPeriod(tf string) string {
+	switch tf {
+	case "15m", "5m":
+		return "Intraday (1-3 days)"
+	case "1h", "4h":
+		return "Short-term (1-2 weeks)"
+	case "1d":
+		return "Medium-term (2-4 weeks)"
+	default:
+		return "Variable"
+	}
+}
+
+func getTradingSession(t time.Time) string {
+	hour := t.Hour()
+	switch {
+	case hour >= 0 && hour < 8:
+		return "Asian Session"
+	case hour >= 8 && hour < 16:
+		return "European Session"
+	case hour >= 16 && hour < 24:
+		return "US Session"
+	default:
+		return "Global Session"
+	}
+}
+
+func getOptimalTradingHours(tf string) string {
+	switch tf {
+	case "15m", "5m":
+		return "Session overlaps (08:00-11:00, 14:00-17:00 UTC)"
+	case "1h", "4h":
+		return "Any time, focus on key levels"
+	case "1d":
+		return "Daily close analysis"
+	default:
+		return "Monitor key level breaks"
+	}
+}
 func callDeepSeek(candles []Candle, series *techan.TimeSeries, symbol, tf string, srLevels []SupportResistance, patterns []Pattern) string {
 	prompt := buildPrompt(series, symbol, tf, srLevels, patterns)
 	payload := map[string]any{
